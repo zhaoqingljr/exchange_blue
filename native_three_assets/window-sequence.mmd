@@ -1,0 +1,47 @@
+sequenceDiagram
+    autonumber
+    participant I as Java-to-native 输入边界
+    participant O as SlicingWindowOperator
+    participant P as RowTimeWindowDeduplicateProcessor
+    participant S as Keyed State
+    participant T as Timer Service
+    participant D as 下游 Output
+    Note over O,T: 前置：open 已绑定候选状态和事件时间服务；窗口边界由上游 TVF 生成
+    I->>O: processBatch(record)，先刷出缓存数据
+    O->>P: processBatch(batch)
+    loop 按输入顺序逐行
+        P->>P: 校验并复制行，判断是否迟到
+        alt 未迟到
+            P->>S: 设置 key 和 windowEnd namespace，读取候选
+            S-->>P: 完整旧候选 / 空
+            opt 无旧候选，或 First 新时间更小，或 Last 新时间不小于旧值
+                P->>S: 保存独立新候选，处理旧行所有权
+            end
+            P->>T: registerEventTimeTimer(end, end−1)
+        else 已迟到
+            P->>P: 标记丢弃；不写状态、不注册 timer
+        end
+    end
+    P-->>O: 返回是否丢弃过迟到行
+    O-->>I: 释放输入批次和记录，返回
+    I->>O: ProcessWatermark(各通道合并后的 mark)
+    alt mark 大于算子当前 Watermark
+        O->>P: advanceProgress(mark)
+    else mark 未前进
+        O->>O: 使用算子当前 Watermark
+    end
+    O->>T: 通过基类运行时推进有效 Watermark
+    loop 每个到期 timer
+        T->>O: onEventTime(timer)
+        O->>S: 设置 timer 对应 key
+        O->>P: fireWindow(windowEnd)
+        P->>S: 设置 namespace，读取候选
+        S-->>P: 候选 / 空
+        opt 候选存在
+            P->>D: collect(独立的一行 INSERT 批次)
+        end
+        O->>P: clearWindow(windowEnd)
+        P->>S: 清除该窗口状态
+    end
+    T-->>O: 到期 timer 处理完毕
+    O->>D: emitWatermark(有效 Watermark)

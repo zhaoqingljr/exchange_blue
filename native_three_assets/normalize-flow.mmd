@@ -1,0 +1,40 @@
+flowchart LR
+    subgraph BATCH["批次处理"]
+        direction TB
+        A(["processBatch"]) --> V["校验 schema 与状态初始化"]
+        V --> Z{"空批次？"}
+        Z -->|是| END(["释放输入批次，返回"])
+        Z -->|否| BUF["创建结果缓冲区"]
+        BUF --> Q{"还有未处理行？"}
+        Q -->|有| ONE[["处理下一行<br/>见右侧单行逻辑"]]
+        ONE --> Q
+        Q -->|无| OUT{"结果行数大于 0？"}
+        OUT -->|是| SEND["构造实际大小的结果<br/>collect 转交下游"]
+        OUT -->|否| END
+        SEND --> END
+    end
+    subgraph ROW["单行规范化"]
+        direction TB
+        KEY["提取主键，设置当前 key<br/>读取历史完整记录"] --> KIND{"RowKind 与旧状态"}
+        KIND -->|"+I / +U，无旧行"| INS["追加 +I 新值"]
+        KIND -->|"+I / +U，旧行不等"| UPD["按配置追加 -U 旧值<br/>再追加 +U 新值"]
+        KIND -->|"+I / +U，整行相等"| SAME["不追加结果<br/>不修改状态"]
+        KIND -->|"-D / -U"| EXISTS{"存在旧行？"}
+        EXISTS -->|否| SAME
+        EXISTS -->|是| DEL["追加 -D 完整旧值<br/>清除状态"]
+        INS --> SAVE["保存独立新快照，更新 ComboId<br/>状态行 RowKind 设为 INSERT"]
+        UPD --> SAVE
+        SAVE --> FREE["回收不再引用的旧快照"]
+        DEL --> FREE
+        SAME --> RET(["完成当前行，返回批次循环"])
+        FREE --> RET
+    end
+    BATCH ~~~ ROW
+    classDef action fill:#eef5ff,stroke:#4779b8,color:#172b4d;
+    classDef decision fill:#fff5df,stroke:#b88b31,color:#513b11;
+    classDef state fill:#e9f6ee,stroke:#43845c,color:#17442b;
+    classDef terminal fill:#f1f3f6,stroke:#7e8b9b,color:#263445;
+    class V,BUF,ONE,SEND,KEY,INS,UPD,SAME action;
+    class Z,Q,OUT,KIND,EXISTS decision;
+    class SAVE,FREE,DEL state;
+    class A,END,RET terminal;

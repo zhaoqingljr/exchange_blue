@@ -1,0 +1,31 @@
+flowchart LR
+    subgraph DATA["数据批次路径"]
+        direction TB
+        A(["processBatch(record)"]) --> B["校验并取得 VectorBatch"]
+        B --> EMPTY{"空批次？"}
+        EMPTY -->|是| PASS["collect 原记录与批次<br/>转交所有权"]
+        EMPTY -->|否| SCAN["校验列数，按原序扫描 RowKind<br/>保留非 UPDATE_BEFORE 的行位置"]
+        SCAN --> N{"保留行数"}
+        N -->|全部| PASS
+        N -->|零行| DROP["释放输入记录与批次<br/>不发送数据"]
+        N -->|部分| COPY["按位置复制列数据及 NULL<br/>复制 RowKind 与行时间戳"]
+        COPY --> REPLACE["replace 替换载荷，保留外层元数据<br/>释放旧批次"]
+        REPLACE --> SEND["collect 结果记录<br/>转交所有权"]
+        PASS --> END(["本次调用返回"])
+        DROP --> END
+        SEND --> END
+    end
+    subgraph CONTROL["独立控制事件路径"]
+        direction TB
+        WM(["ProcessWatermark"]) --> WMO["emitWatermark"]
+        ST(["processWatermarkStatus"]) --> STO["emitWatermarkStatus"]
+    end
+    DATA ~~~ CONTROL
+    classDef action fill:#eef5ff,stroke:#4779b8,color:#172b4d;
+    classDef decision fill:#fff5df,stroke:#b88b31,color:#513b11;
+    classDef output fill:#e9f6ee,stroke:#43845c,color:#17442b;
+    classDef terminal fill:#f1f3f6,stroke:#7e8b9b,color:#263445;
+    class B,SCAN,COPY,REPLACE action;
+    class EMPTY,N decision;
+    class PASS,SEND,WMO,STO output;
+    class A,DROP,END,WM,ST terminal;

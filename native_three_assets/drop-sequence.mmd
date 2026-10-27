@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    participant U as 上游
+    participant O as DropUpdateBeforeOperator
+    participant V as VectorHelper
+    participant D as 下游 Output
+    alt 数据批次
+        U->>O: processBatch(record)
+        O->>O: 校验并接管输入；非空批次扫描 RowKind
+        alt 空批次或全部保留
+            O->>D: collect(原记录)，转交原批次
+        else 全部过滤
+            O->>O: 释放记录和批次，不 collect
+        else 部分保留
+            loop 每一列
+                O->>V: CopyPositionsVector(保留位置)
+                V-->>O: 选行后的列向量
+            end
+            O->>O: 按保留位置复制 RowKind 和行时间戳
+            O->>O: replace 载荷；保留外层元数据；释放旧批次
+            O->>D: collect(结果记录)，转交所有权
+        end
+        O-->>U: 返回
+    else Watermark
+        U->>O: ProcessWatermark(mark)
+        O->>D: emitWatermark(mark)
+    else WatermarkStatus
+        U->>O: processWatermarkStatus(status)
+        O->>D: emitWatermarkStatus(status)
+    end

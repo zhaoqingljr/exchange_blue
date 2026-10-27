@@ -1,0 +1,33 @@
+sequenceDiagram
+    autonumber
+    participant U as 上游
+    participant O as KeyedProcessOperator / Context
+    participant F as ChangelogNormalizeFunction
+    participant S as Keyed State
+    participant C as TimestampedCollector / Output
+    Note over O,S: 前置：open 已取得 deduplicate-state
+    U->>O: processBatch(StreamRecord)
+    O->>F: processBatch(batch, context, collector)
+    F->>F: 校验输入；非空时创建结果缓冲区
+    loop 非空批次，按输入顺序逐行
+        F->>O: context.setCurrentKey(key)
+        F->>S: value()；命中时读取历史批次
+        S-->>F: 完整旧行 / 无旧行
+        alt +I / +U，无旧行或整行不等
+            F->>F: 无旧行追加 +I；有旧行追加可选 -U 及 +U
+            F->>S: 保存新快照（RowKind=INSERT），再更新 ComboId
+            F->>S: 若有旧行，回收不再引用的旧快照
+        else -D / -U，存在旧行
+            F->>F: 追加完整旧值 -D
+            F->>S: clear()，再回收旧快照
+        else +I / +U 整行相等，或删除未命中
+            Note over F,S: 不追加结果，状态保持不变
+        end
+    end
+    opt 有输出结果
+        F->>F: 构造实际行数的批次，保留 NULL 和行时间戳
+        F->>C: collect(batch)
+        C->>C: 包装 StreamRecord，转交下游
+    end
+    F-->>O: 释放输入批次，返回
+    O-->>U: 释放输入记录，返回

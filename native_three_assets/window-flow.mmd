@@ -1,0 +1,40 @@
+flowchart LR
+    subgraph DATA["数据处理阶段"]
+        direction TB
+        A(["接收 VectorBatch"]) --> V["校验状态、列数及向量类型"]
+        V --> Q{"还有未处理行？"}
+        Q -->|无| END(["返回是否丢弃过迟到行"])
+        Q -->|有| B["取下一行：校验 INSERT<br/>复制行，校验非空时间和 windowEnd"]
+        B --> LATE{"窗口已到触发时间？"}
+        LATE -->|是| DROP["标记丢弃迟到行"]
+        DROP --> Q
+        LATE -->|否| KEY["设置业务 key 和 windowEnd namespace<br/>读取历史候选"]
+        KEY --> REPLACE{"无旧候选，或<br/>First：新时间 &lt; 旧时间<br/>Last：新时间 &gt;= 旧时间？"}
+        REPLACE -->|是| SAVE["保存独立候选<br/>按后端所有权释放旧行"]
+        REPLACE -->|否| TIMER["注册 timer：windowEnd − 1 ms"]
+        SAVE --> TIMER
+        TIMER --> Q
+    end
+    subgraph WM["Watermark 触发阶段"]
+        direction TB
+        W(["收到合并后的 Watermark"]) --> NEW{"大于算子当前 Watermark？"}
+        NEW -->|是| ADV["advanceProgress：更新 processor 进度"]
+        NEW -->|否| OLD["沿用算子当前 Watermark"]
+        ADV --> TIME["运行时 advanceWatermark"]
+        OLD --> TIME
+        TIME --> DUE{"存在到期 timer？"}
+        DUE -->|是| RESTORE["恢复 timer 的业务 key"]
+        RESTORE --> FIRE["fireWindow：定位窗口候选<br/>有候选则输出独立的一行 +I"]
+        FIRE --> CLEAR["clearWindow：清理窗口状态"]
+        CLEAR --> DUE
+        DUE -->|否| EMIT(["转发有效 Watermark，返回"])
+    end
+    DATA ~~~ WM
+    classDef action fill:#eef5ff,stroke:#4779b8,color:#172b4d;
+    classDef decision fill:#fff5df,stroke:#b88b31,color:#513b11;
+    classDef state fill:#e9f6ee,stroke:#43845c,color:#17442b;
+    classDef terminal fill:#f1f3f6,stroke:#7e8b9b,color:#263445;
+    class V,B,KEY,TIMER,ADV,OLD,TIME,RESTORE action;
+    class Q,LATE,REPLACE,NEW,DUE decision;
+    class SAVE,FIRE,CLEAR state;
+    class A,END,DROP,W,EMIT terminal;
